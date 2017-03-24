@@ -2,6 +2,7 @@ import { tick, global, installClock, uninstallClock } from '../../utils';
 import mockTransport from '../../mocks/transport';
 
 const Subscription = saxo.openapi._StreamingSubscription;
+const extend = saxo.utils.object.extend;
 
 var transport;
 var updateSpy, createdSpy, errorSpy;
@@ -693,16 +694,64 @@ describe("openapi StreamingSubscription", () => {
 
                 let oldReferenceId = subscription.referenceId;
                 subscription.reset();
+
+                // sends delete request for old subscription
+                expect(transport.delete.calls.count()).toEqual(1);
+                expect(transport.delete.calls.mostRecent().args[2].referenceId).toEqual(oldReferenceId);
+
                 expect(oldReferenceId).not.toEqual(subscription.referenceId);
 
                 // sent off another new request for a subscription
                 expect(transport.post.calls.count()).toEqual(1);
                 transport.post.calls.reset();
-                expect(transport.delete.calls.count()).toEqual(0);
 
                 done();
             });
 
+        });
+
+        it("calls patch on modify with patch method option", (done) => {
+            var subscription = new Subscription('123', transport, 'serviceGroup', 'test/resource', {}, createdSpy, updateSpy);
+
+            const initialArgs = { initialArgs: 'initialArgs' };
+            subscription.subscriptionData.Arguments = initialArgs;
+            subscription.onSubscribe();
+
+            sendInitialResponse({InactivityTimeout: 100, Snapshot: { resetResponse: true }});
+
+            tick(() => {
+                const args = { testArgs: 'test' };
+                subscription.onModify(args, { method:'PATCH'});
+                const mergedArgs = extend(initialArgs, args);
+                // subscription arguments are updated
+                expect(subscription.subscriptionData.Arguments).toEqual(mergedArgs);
+                // sends patch request on modify
+                expect(transport.patch.calls.count()).toEqual(1);
+
+                done();
+            });
+        });
+
+        it("resubscribes with new arguments on modify without patch method option", (done) => {
+            var subscription = new Subscription('123', transport, 'serviceGroup', 'test/resource', {}, createdSpy, updateSpy);
+
+            const initialArgs = { initialArgs: 'initialArgs' };
+            subscription.subscriptionData.Arguments = initialArgs;
+            subscription.onSubscribe();
+
+            sendInitialResponse({InactivityTimeout: 100, Snapshot: { resetResponse: true }});
+
+            tick(() => {
+                const newArgs = { newArgs: 'test' };
+                subscription.onModify(newArgs);
+                // subscribed with new arguments
+                expect(subscription.subscriptionData.Arguments).toEqual(newArgs);
+                // sends delete request on modify
+                expect(transport.delete.calls.count()).toEqual(1);
+                expect(transport.post.calls.count()).toEqual(1);
+
+                done();
+            });
         });
     });
 });

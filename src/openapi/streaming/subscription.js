@@ -9,6 +9,7 @@ import {
     ACTION_SUBSCRIBE,
     ACTION_UNSUBSCRIBE,
     ACTION_MODIFY_SUBSCRIBE,
+    ACTION_MODIFY_PATCH,
 } from './subscription-actions';
 import SubscriptionQueue from './subscription-queue';
 
@@ -73,6 +74,20 @@ function unsubscribe() {
         .then(onUnsubscribeSuccess.bind(this, referenceId))
         .catch(onUnsubscribeError.bind(this, referenceId));
 }
+/**
+ * Does subscription modification through PATCH request
+ */
+function modifyPatch() {
+
+    const referenceId = this.referenceId;
+
+    this.transport.patch(this.serviceGroup, this.url + '/active/{contextId}/{referenceId}', {
+        contextId: this.streamingContextId,
+        referenceId: this.referenceId,
+    }, { body: this.subscriptionData.Arguments })
+        .then(onModifyPatchSuccess.bind(this, referenceId))
+        .catch(onModifyPatchError.bind(this, referenceId));
+}
 
 /**
  * Queues or performs an action based on the current state.
@@ -102,8 +117,9 @@ function onReadyToPerformNextAction() {
 /**
  * Performs an action to a subscription based on the current state.
  * @param action
+ * @param arguments
  */
-function performAction(action) {
+function performAction(action, args) {
     switch (action) {
         case ACTION_SUBSCRIBE:
         case ACTION_MODIFY_SUBSCRIBE:
@@ -113,6 +129,17 @@ function performAction(action) {
 
                 case STATE_UNSUBSCRIBED:
                     subscribe.call(this);
+                    break;
+
+                default:
+                    log.error(LOG_AREA, 'unanticipated state', { state: this.currentState, action });
+            }
+            break;
+
+        case ACTION_MODIFY_PATCH:
+            switch (this.currentState) {
+                case STATE_SUBSCRIBED:
+                    modifyPatch.call(this, args);
                     break;
 
                 default:
@@ -263,6 +290,32 @@ function onUnsubscribeError(referenceId, response) {
 }
 
 /**
+ * Called after modify patch is successful
+ * @param referenceId
+ * @param response
+ */
+function onModifyPatchSuccess(referenceId, response) {
+    if (referenceId !== this.referenceId) {
+        log.debug(LOG_AREA, 'Received an error response for patching a subscription');
+        return;
+    }
+    onReadyToPerformNextAction.call(this);
+}
+
+/**
+ * Called when a unsubscribe errors
+ * @param response
+ */
+function onModifyPatchError(referenceId, response) {
+    if (referenceId !== this.referenceId) {
+        log.debug(LOG_AREA, 'Received an error response for patching a subscription');
+        return;
+    }
+    log.error(LOG_AREA, 'An error occurred patching', { response, url: this.url });
+    onReadyToPerformNextAction.call(this);
+}
+
+/**
  * Resets the subscription activity
  */
 function onActivity() {
@@ -351,6 +404,7 @@ Subscription.prototype.reset = function() {
             break;
 
         case STATE_SUBSCRIBED:
+            this.onUnsubscribe();
             break;
 
         default:
@@ -392,15 +446,22 @@ Subscription.prototype.onSubscribe = function(modify) {
  * @param {Object} args - The arguments of modified subscription.
  * @private
  */
-Subscription.prototype.onModify = function(args) {
+Subscription.prototype.onModify = function(args, options) {
 
     if (this.isDisposed) {
         throw new Error('Modifying a disposed subscription - you will not get data');
     }
 
-    this.onUnsubscribe();
-    this.subscriptionData.Arguments = args;
-    this.onSubscribe(true);
+    if (options && options.method === 'PATCH') {
+        // modify arguments and patch subscription
+        this.subscriptionData.Arguments = extend(this.subscriptionData.Arguments, args);
+        tryPerformAction.call(this, ACTION_MODIFY_PATCH, args);
+    } else {
+        // resubscribe with new arguments
+        this.onUnsubscribe();
+        this.subscriptionData.Arguments = args;
+        this.onSubscribe(true);
+    }
 };
 
 /**
